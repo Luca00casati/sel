@@ -6,7 +6,7 @@
 
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))
 
-#define HALT_IF(cond, error) do{if(cond){fputs(error, stderr);abort();}}while(0)
+#define HALT_IF(cond, error) do{if(cond){perror(error);abort();}}while(0)
 
 #ifndef NDEBUG
 #define DEBUG_HALT_IF(cond, error) HALT_IF(cond, error)
@@ -40,14 +40,6 @@ typedef enum{
   OP_DROP
 }Operators;
 
-
-
-typedef struct{
-  void* data;
-  word_size size;
-  word_size current_size;
-}Arena;
-
 void string(String *str, const char* cstr){
   DEBUG_HALT_IF(str->data != NULL || str->len != 0, "error invalid string string\n");
   str->len = strlen(cstr);
@@ -59,13 +51,80 @@ void string(String *str, const char* cstr){
   memcpy(str->data, cstr, str->len); 
 }
 
-void arena_add(Arena *arena, word_size offset, word_size size_arr){
-  //DEBUG_HALT_IF(arena->data != NULL || arena->size != 0 || arena->current_size != 0 || offset == 0 || size_arr == 0, " 
-  
+void free_string(String *str){
+  free(str->data);
+  str->len = 0;
+}
+
+#define ARENA_GROW 2
+#define ARENA_INIT_SIZE 256
+
+typedef struct{
+  byte* data;
+  word_size offset;
+  word_size size;
+}Arena;
+
+#define arena_alloc(arena, type) ((type *)arena_alloc_aligned((arena), sizeof(type), _Alignof(type)))
+#define arena_alloc_array(arena, type, count) ((type *)arena_alloc_aligned((arena), sizeof(type) * (count), _Alignof(type)))
+
+static inline size_t
+align_up(size_t ptr, size_t align) {
+    return (ptr + (align - 1)) & ~(align - 1);
+}
+
+static void
+arena_grow(Arena *arena, size_t min_size) {
+    size_t new_size = arena->size ? arena->size : ARENA_INIT_SIZE;
+
+    while (new_size < min_size)
+        new_size *= ARENA_GROW;
+
+    void *tmp = realloc(arena->data, new_size);
+    if (!tmp) {
+        perror("arena realloc");
+        exit(1);
+    }
+
+    arena->data = tmp;
+    arena->size = new_size;
+}
+
+void *
+arena_alloc_aligned(Arena *arena, size_t size, size_t align) {
+    if ((align & (align - 1)) != 0) {
+        fprintf(stderr, "alignment must be power of two\n");
+        exit(1);
+    }
+
+    size_t aligned_offset = align_up(arena->offset, align);
+    size_t end = aligned_offset + size;
+
+    if (end > arena->size) {
+        arena_grow(arena, end);
+    }
+
+    void *ptr = arena->data + aligned_offset;
+    arena->offset = end;
+
+    return ptr;
+}
+
+
+void arena_reset(Arena *arena) {
+    arena->offset = 0;
+}
+
+void arena_free(Arena *arena) {
+    free(arena->data);
+    arena->data = NULL;
+    arena->size = 0;
+    arena->offset = 0;
+}
 
 int main(){
   Arena strings = {0};
   String exp = {0};
   string(&exp, "(+ 1 2)");
-  
+  free_string(&exp); 
 }
