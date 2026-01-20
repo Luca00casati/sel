@@ -14,6 +14,14 @@ void string(String *str, const char* cstr){
   memcpy(str->data, cstr, str->len); 
 }
 
+String arena_strdup(Arena *arena, const char *src) {
+    String s = {0};
+    s.len = strlen(src);
+    s.data = arena_alloc(arena, s.len);
+    memcpy(s.data, src, s.len);
+    return s;
+}
+
 void free_string(String *str){
   free(str->data);
   str->len = 0;

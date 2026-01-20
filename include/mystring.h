@@ -1,5 +1,6 @@
 #pragma once
 #include "common.h"
+#include "arena.h"
 
 typedef struct{
   byte* data;
@@ -7,6 +8,6 @@ typedef struct{
 }String;
 
 void string(String *str, const char* cstr);
-
+String arena_strdup(Arena *arena, const char* cstr);
 void free_string(String *str);
 

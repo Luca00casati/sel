@@ -1,9 +1,15 @@
+#include "arena.h"
 #include <stdio.h>
 #include <stdlib.h>
-#include "arena.h"
 
 word_size align_up(word_size ptr, word_size align) {
     return (ptr + (align - 1)) & ~(align - 1);
+}
+
+void arena_init(Arena *arena) {
+    arena->data = NULL;
+    arena->size = 0;
+    arena->offset = 0;
 }
 
 void arena_grow(Arena *arena, word_size min_size) {
@@ -31,9 +37,8 @@ void *arena_alloc_aligned(Arena *arena, word_size size, word_size align) {
     word_size aligned_offset = align_up(arena->offset, align);
     word_size end = aligned_offset + size;
 
-    if (end > arena->size) {
+    if (end > arena->size)
         arena_grow(arena, end);
-    }
 
     void *ptr = arena->data + aligned_offset;
     arena->offset = end;
@@ -41,6 +46,9 @@ void *arena_alloc_aligned(Arena *arena, word_size size, word_size align) {
     return ptr;
 }
 
+void *arena_alloc(Arena *arena, word_size size) {
+    return arena_alloc_aligned(arena, size, sizeof(void *));
+}
 
 void arena_reset(Arena *arena) {
     arena->offset = 0;

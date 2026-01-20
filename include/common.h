@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include <stddef.h>
 #pragma once
 
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))

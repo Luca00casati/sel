@@ -10,11 +10,9 @@ typedef struct{
   word_size size;
 }Arena;
 
-#define arena_alloc(arena, type) ((type *)arena_alloc_aligned((arena), sizeof(type), _Alignof(type)))
-#define arena_alloc_array(arena, type, count) ((type *)arena_alloc_aligned((arena), sizeof(type) * (count), _Alignof(type)))
-
-word_size align_up(word_size ptr, word_size align);
+word_size align_up(word_size ptr, word_size allign);
 void arena_grow(Arena *arena, word_size min_size);
 void* arena_alloc_aligned(Arena *arena, word_size size, word_size align);
+void *arena_alloc(Arena *arena, word_size size);
 void arena_reset(Arena *arena);
 void arena_free(Arena *arena);
