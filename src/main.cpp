@@ -1,9 +1,12 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include "common.h"
-#include "mystring.h"
-#include "arena.h"
+#include <iostream>
+#include <cstddef>
+#include <cstdint>
+#include "arena.hpp"
+
+using word = std::uintptr_t;
+using word_size = std::size_t;
+
+using namespace std;
 
 typedef struct{
   word value;
@@ -29,9 +32,7 @@ typedef enum{
 }Operators;
 
 int main(){
-  //String exp = {0};
-  Arena arena = {0};
-  String str = arena_strdup(&arena, "hello");
-  printf("str: %s, len: %ld\n", str.data, str.len);
-  arena_free(&arena); 
+  Arena arena;
+  string_view str = arena.strdup("hello");
+  cout << str << endl;
 }

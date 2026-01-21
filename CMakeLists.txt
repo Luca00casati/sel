@@ -2,18 +2,15 @@ cmake_minimum_required(VERSION 3.16)
 
 project(sel
     VERSION 1.0
-    LANGUAGES C
+    LANGUAGES CXX
 )
 
-# Use a modern C standard for _Alignof
-set(CMAKE_C_STANDARD 11)
-set(CMAKE_C_STANDARD_REQUIRED ON)
-set(CMAKE_C_EXTENSIONS OFF)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_executable(sel
-    src/main.c
-    src/arena.c
-    src/mystring.c
+    src/main.cpp
 )
 
 target_include_directories(sel
