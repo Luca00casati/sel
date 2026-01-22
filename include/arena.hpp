@@ -2,118 +2,137 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <stdexcept>
 #include <type_traits>
-#include <new>
+#include "sel.hpp"
 
 class Arena {
 public:
-    explicit Arena(std::size_t initial_size = kInitSize)
-        : data_(nullptr), size_(0), offset_(0)
-    {
-        if (initial_size)
-            grow(initial_size);
+  explicit Arena(std::size_t chunk_size = kDefaultChunkSize)
+      : chunk_size_(chunk_size) {
+    if (chunk_size_ == 0)
+      sel::fatal("arena chunk size cannot be zero");
+    add_chunk(chunk_size_);
+  }
+
+  ~Arena() {
+    Chunk *chunk = head_;
+    while (chunk) {
+      Chunk *next = chunk->next;
+      std::free(chunk);
+      chunk = next;
     }
+  }
 
-    ~Arena() {
-        std::free(data_);
+  Arena(const Arena &) = delete;
+  Arena &operator=(const Arena &) = delete;
+
+  Arena(Arena &&other) noexcept
+      : head_(other.head_), current_(other.current_),
+        current_offset_(other.current_offset_), chunk_size_(other.chunk_size_) {
+    other.head_ = nullptr;
+    other.current_ = nullptr;
+    other.current_offset_ = 0;
+    other.chunk_size_ = 0;
+  }
+
+  Arena &operator=(Arena &&other) noexcept {
+    if (this != &other) {
+      Chunk *chunk = head_;
+      while (chunk) {
+        Chunk *next = chunk->next;
+        std::free(chunk);
+        chunk = next;
+      }
+      head_ = other.head_;
+      current_ = other.current_;
+      current_offset_ = other.current_offset_;
+      chunk_size_ = other.chunk_size_;
+
+      other.head_ = nullptr;
+      other.current_ = nullptr;
+      other.current_offset_ = 0;
+      other.chunk_size_ = 0;
     }
+    return *this;
+  }
 
-    Arena(const Arena&) = delete;
-    Arena& operator=(const Arena&) = delete;
+  void reset() noexcept {
+    current_ = head_;
+    current_offset_ = 0;
+  }
 
-    Arena(Arena&& other) noexcept
-        : data_(other.data_), size_(other.size_), offset_(other.offset_)
-    {
-        other.data_ = nullptr;
-        other.size_ = 0;
-        other.offset_ = 0;
-    }
+  template <typename T> T *alloc(std::size_t count = 1) noexcept {
+    static_assert(!std::is_void_v<T>, "arena cannot allocate void");
+    if (count > SIZE_MAX / sizeof(T))
+      sel::fatal("arena allocation size overflow");
+    return static_cast<T *>(alloc_aligned(sizeof(T) * count, alignof(T)));
+  }
 
-    Arena& operator=(Arena&& other) noexcept {
-        if (this != &other) {
-            std::free(data_);
-            data_ = other.data_;
-            size_ = other.size_;
-            offset_ = other.offset_;
+  void *alloc_bytes(std::size_t size) noexcept {
+    return alloc_aligned(size, alignof(std::max_align_t));
+  }
 
-            other.data_ = nullptr;
-            other.size_ = 0;
-            other.offset_ = 0;
-        }
-        return *this;
-    }
-
-    void reset() noexcept {
-        offset_ = 0;
-    }
-
-    template <typename T>
-    T* alloc(std::size_t count = 1) {
-        static_assert(!std::is_void_v<T>, "cannot allocate void");
-        return static_cast<T*>(
-            alloc_aligned(sizeof(T) * count, alignof(T))
-        );
-    }
-
-    void* alloc_bytes(std::size_t size) {
-        return alloc_aligned(size, alignof(std::max_align_t));
-    }
-
-    char* strdup(const char* s) {
+  char *strdup(const char *s) noexcept {
+    if (!s)
+      return nullptr;
     std::size_t len = std::strlen(s) + 1;
-    char* dst = alloc<char>(len);
+    char *dst = alloc<char>(len);
     std::memcpy(dst, s, len);
     return dst;
-    }
+  }
 
 private:
-    static constexpr std::size_t kInitSize = 4096;
-    static constexpr std::size_t kGrowFactor = 2;
+  static constexpr std::size_t kDefaultChunkSize = 4096;
 
-    static std::size_t align_up(std::size_t value, std::size_t align) {
-        return (value + (align - 1)) & ~(align - 1);
+  struct Chunk {
+    Chunk *next;
+    std::byte data[1];
+  };
+
+  Chunk *head_ = nullptr;
+  Chunk *current_ = nullptr;
+  std::size_t current_offset_ = 0;
+  std::size_t chunk_size_;
+
+  std::size_t align_up(std::size_t value, std::size_t align) noexcept {
+    return (value + (align - 1)) & ~(align - 1);
+  }
+
+  void add_chunk(std::size_t min_size) noexcept {
+    std::size_t size = (min_size > chunk_size_) ? min_size : chunk_size_;
+    // Allocate extra space for the Chunk struct itself
+    std::size_t total_size = sizeof(Chunk) - 1 + size;
+    Chunk *chunk = static_cast<Chunk *>(std::malloc(total_size));
+    if (!chunk)
+      sel::fatal("arena malloc failed for new chunk");
+    chunk->next = nullptr;
+
+    if (!head_) {
+      head_ = chunk;
+    } else {
+      current_->next = chunk;
+    }
+    current_ = chunk;
+    current_offset_ = 0;
+  }
+
+  void *alloc_aligned(std::size_t size, std::size_t align) noexcept {
+    if ((align & (align - 1)) != 0)
+      sel::fatal("arena alignment must be power of two");
+
+    std::size_t aligned_offset = align_up(current_offset_, align);
+    if (aligned_offset + size > chunk_size_) {
+      // Need a new chunk
+      std::size_t new_chunk_size = (size > chunk_size_) ? size : chunk_size_;
+      add_chunk(new_chunk_size);
+      aligned_offset = 0;
     }
 
-    void grow(std::size_t min_size) {
-        std::size_t new_size = size_ ? size_ : kInitSize;
-
-        while (new_size < min_size) {
-            if (new_size > SIZE_MAX / kGrowFactor)
-                throw std::bad_alloc();
-            new_size *= kGrowFactor;
-        }
-
-        void* new_data = std::realloc(data_, new_size);
-        if (!new_data)
-            throw std::bad_alloc();
-
-        data_ = static_cast<std::byte*>(new_data);
-        size_ = new_size;
-    }
-
-    void* alloc_aligned(std::size_t size, std::size_t align) {
-        if ((align & (align - 1)) != 0)
-            throw std::invalid_argument("alignment must be power of two");
-
-        std::size_t aligned_offset = align_up(offset_, align);
-
-        if (size > SIZE_MAX - aligned_offset)
-            throw std::bad_alloc();
-
-        std::size_t end = aligned_offset + size;
-
-        if (end > size_)
-            grow(end);
-
-        void* ptr = data_ + aligned_offset;
-        offset_ = end;
-        return ptr;
-    }
-
-    std::byte* data_;
-    std::size_t size_;
-    std::size_t offset_;
+    void *ptr = current_->data + aligned_offset;
+    current_offset_ = aligned_offset + size;
+    return ptr;
+  }
 };
