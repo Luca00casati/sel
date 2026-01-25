@@ -1,16 +1,28 @@
-CC      := gcc
-CFLAGS  := -std=c11 -Wall -Wextra -O2
-LDFLAGS := -lgc
+CC = gcc
+CFLAGS = -O2 -Wall -Wextra -std=c11
+LDFLAGS = -lgc
 
-BIN     := sel
-SRC     := sel.c sel_lexer.c
+# Source files
+SRCS = sel.c
+TEST_SRCS = test_sel.c sel.c
 
-.PHONY: all clean
+# Targets
+all: sel test_sel
 
-all: $(BIN)
+# Build the REPL
+sel: $(SRCS)
+	$(CC) $(CFLAGS) $^ $(LDFLAGS) -o $@
 
-$(BIN): $(SRC)
-	$(CC) $(CFLAGS) $(SRC) -o $(BIN) $(LDFLAGS)
+# Build the test executable
+test_sel: $(TEST_SRCS)
+	$(CC) $(CFLAGS) -DTEST_BUILD $^ $(LDFLAGS) -o $@
 
+# Run tests
+run_tests: test_sel
+	./test_sel
+
+# Clean build artifacts
 clean:
-	rm -f $(BIN)
+	rm -f sel test_sel
+
+.PHONY: all clean run_tests
