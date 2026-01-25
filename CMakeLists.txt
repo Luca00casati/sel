@@ -10,12 +10,12 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_executable(sel
-    src/main.cpp
+    sel.cpp
 )
 
-target_include_directories(sel
-    PRIVATE include
-)
+#target_include_directories(sel
+#    PRIVATE include
+#)
 
 # Warnings (recommended)
 if (MSVC)
