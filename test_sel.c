@@ -1,55 +1,65 @@
 #include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include <stdint.h>
 #include <inttypes.h>
-#include <gc/gc.h>
+#include "sel.h"
 
-extern int run_expression(const char* expr, uint64_t* out);
+/* ---------------- Test State ---------------- */
+static int tests_total  = 0;
+static int tests_failed = 0;
 
-static int tests_passed = 0;
-static int tests_total = 0;
+/* ---------------- Test Macro ---------------- */
+#define TEST(expr, expected_val) do {                                \
+    tests_total++;                                                   \
+    Arena* arena = arena_create(1024);                               \
+    word64 result = 0;                                               \
+    word64 expected = (word64)(expected_val);                        \
+                                                                     \
+    if (run_expression((expr), &result, arena) != 0) {               \
+        printf("[FAIL] %s => ERROR\n", (expr));                      \
+        tests_failed++;                                              \
+    } else if (result != expected) {                                 \
+        printf("[FAIL] %s => got %" PRIu64                           \
+               ", expected %" PRIu64 "\n",                           \
+               (expr), result, expected);                            \
+        tests_failed++;                                              \
+    } else {                                                         \
+        printf("[PASS] %s => %" PRIu64 "\n",                         \
+               (expr), result);                                      \
+    }                                                                \
+                                                                     \
+    arena_destroy(arena);                                            \
+} while (0)
 
-void test(const char* expr, const char* expected_str) {
-    tests_total++;
-    uint64_t expected;
-    if(strcmp(expected_str,"#t")==0) expected=1;
-    else if(strcmp(expected_str,"#f")==0) expected=0;
-    else expected = strtoull(expected_str,NULL,10);
+/* ---------------- Main ---------------- */
+int main(void) {
+    printf("Running sel tests...\n\n");
 
-    uint64_t result;
-    if(run_expression(expr,&result)!=0) {
-        printf("Test %d: ERROR evaluating %s\n", tests_total, expr);
-        return;
-    }
+    /* Arithmetic */
+    TEST("(+ 1 2)", 3);
+    TEST("(+ 1 2 3 4)", 10);
+    TEST("(* 2 3 4)", 24);
+    TEST("(- 10 4)", 6);
+    TEST("(/ 20 5)", 4);
 
-    if(result==expected) {
-        printf("Test %d: PASSED\n", tests_total);
-        tests_passed++;
-    } else {
-        printf("Test %d: FAILED\n  Input: %s\n  Expected: %" PRIu64 ", Got: %" PRIu64 "\n",
-               tests_total, expr, expected, result);
-    }
-}
+    /* Nested */
+    TEST("(+ 1 2 (+ 3 4))", 10);
+    TEST("(+ (* 2 3) (- 10 4))", 12);
 
-int main() {
-    GC_INIT();
+    /* Comparisons (booleans as 1 / 0) */
+    TEST("(= 5 5)", 1);
+    TEST("(= 5 6)", 0);
+    TEST("(< 3 5)", 1);
+    TEST("(> 3 5)", 0);
+    TEST("(<= 5 5)", 1);
+    TEST("(>= 6 5)", 1);
 
-    // Arithmetic
-    test("(+ 12 12)","24");
-    test("(+ 1 2 3 4)","10");
-    test("(* 2 3 4)","24");
-    test("(- 10 4)","6");
-    test("(/ 20 5)","4");
+    /* ---------------- Summary ---------------- */
+    printf("\n---------------------------------\n");
+    printf("Tests run   : %d\n", tests_total);
+    printf("Tests failed: %d\n", tests_failed);
+    printf("Tests passed: %d\n", tests_total - tests_failed);
+    printf("---------------------------------\n");
 
-    // Comparisons
-    test("(= (+ 10 21) 31)","#t");
-    test("(< 10 20)","#t");
-    test("(> 5 3)","#t");
-    test("(<= 5 5)","#t");
-    test("(>= 10 9)","#t");
-    test("(= (* 2 3) 6)","#t");
-    test("(= (* 2 3) 7)","#f");
-
-    printf("\nPassed %d/%d tests.\n", tests_passed, tests_total);
-    return 0;
+    /* Non-zero exit on failure (important!) */
+    return tests_failed ? 1 : 0;
 }
