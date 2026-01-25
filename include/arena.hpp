@@ -1,19 +1,19 @@
 #pragma once
 
+#include "sel.hpp"
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <type_traits>
-#include "sel.hpp"
 
 class Arena {
 public:
   explicit Arena(std::size_t chunk_size = kDefaultChunkSize)
       : chunk_size_(chunk_size) {
     if (chunk_size_ == 0)
-      sel::fatal("arena chunk size cannot be zero");
+      sel::fatal("(arena) chunk size cannot be zero");
     add_chunk(chunk_size_);
   }
 
@@ -65,9 +65,9 @@ public:
   }
 
   template <typename T> T *alloc(std::size_t count = 1) noexcept {
-    static_assert(!std::is_void_v<T>, "arena cannot allocate void");
+    static_assert(!std::is_void_v<T>, "(arena) cannot allocate void");
     if (count > SIZE_MAX / sizeof(T))
-      sel::fatal("arena allocation size overflow");
+      sel::fatal("(arena) allocation size overflow");
     return static_cast<T *>(alloc_aligned(sizeof(T) * count, alignof(T)));
   }
 
@@ -77,7 +77,8 @@ public:
 
   char *strdup(const char *s) noexcept {
     if (!s)
-      return nullptr;
+      // return nullptr;
+      sel::fatal("(arena) nullptr on strdup");
     std::size_t len = std::strlen(s) + 1;
     char *dst = alloc<char>(len);
     std::memcpy(dst, s, len);
@@ -107,7 +108,7 @@ private:
     std::size_t total_size = sizeof(Chunk) - 1 + size;
     Chunk *chunk = static_cast<Chunk *>(std::malloc(total_size));
     if (!chunk)
-      sel::fatal("arena malloc failed for new chunk");
+      sel::fatal("(arena) malloc failed for new chunk");
     chunk->next = nullptr;
 
     if (!head_) {
@@ -121,7 +122,7 @@ private:
 
   void *alloc_aligned(std::size_t size, std::size_t align) noexcept {
     if ((align & (align - 1)) != 0)
-      sel::fatal("arena alignment must be power of two");
+      sel::fatal("(arena) alignment must be power of two");
 
     std::size_t aligned_offset = align_up(current_offset_, align);
     if (aligned_offset + size > chunk_size_) {
