@@ -1,159 +1,324 @@
-#include "sel.h"
+// ====================== sel.c ======================
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
+#include <stddef.h>
 #include <string.h>
 #include <ctype.h>
-#include <stdint.h>
 #include <inttypes.h>
 
-// ---------------- Arena ----------------
-Arena* arena_create(size_t chunk_size){
+// --------------------------------------------------
+// Common
+// --------------------------------------------------
+typedef int64_t word64;
+#define ALIGNOF(type) offsetof(struct { char c; type member; }, member)
+
+// --------------------------------------------------
+// Arena (growable, resettable)
+// --------------------------------------------------
+typedef struct {
+    char*  data;
+    size_t size;
+    size_t offset;
+} Arena;
+
+Arena* arena_create(size_t size) {
     Arena* a = malloc(sizeof(Arena));
-    if(!a){ fprintf(stderr,"arena malloc failed\n"); exit(1); }
-    a->head = NULL;
-    a->chunk_size = chunk_size ? chunk_size : 4096;
+    if (!a) { perror("arena"); exit(1); }
+    a->data = malloc(size);
+    if (!a->data) { perror("arena"); exit(1); }
+    a->size = size;
+    a->offset = 0;
     return a;
 }
 
-void* arena_alloc(Arena* a, size_t size, size_t align){
-    if(!a->head || a->head->offset + size + align > a->head->size){
-        size_t chunk_size = (size+align > a->chunk_size) ? size+align : a->chunk_size;
-        Chunk* c = malloc(sizeof(Chunk)+chunk_size);
-        if(!c){ fprintf(stderr,"arena chunk malloc failed\n"); exit(1); }
-        c->next = a->head;
-        c->size = chunk_size;
-        c->offset = 0;
-        a->head = c;
-    }
-    uintptr_t ptr = (uintptr_t)(a->head->data + a->head->offset);
-    uintptr_t aligned = (ptr + align - 1) & ~(align - 1);
-    a->head->offset = (aligned - (uintptr_t)a->head->data) + size;
-    return (void*)aligned;
-}
-
-void arena_destroy(Arena* a){
-    Chunk* c = a->head;
-    while(c){
-        Chunk* next = c->next;
-        free(c);
-        c = next;
-    }
+void arena_destroy(Arena* a) {
+    if (!a) return;
+    free(a->data);
     free(a);
 }
 
-// ---------------- Lexer ----------------
-void lexer_init(Lexer* lx, const char* src, size_t len){ (void)len; lx->src=src; lx->cur=src; }
+void arena_reset(Arena* a) {
+    a->offset = 0;
+}
 
-static void skip_ws(Lexer* lx){ while(*lx->cur && isspace(*lx->cur)) lx->cur++; }
+void* arena_alloc(Arena* a, size_t size, size_t align) {
+    size_t aligned = (a->offset + (align - 1)) & ~(align - 1);
+    size_t needed  = aligned + size;
 
-static Token lexer_next(Lexer* lx){
-    skip_ws(lx);
-    Token tok = {0};
-    tok.start = lx->cur;
-    if(!*lx->cur){ tok.type=TOK_EOF; return tok; }
-    if(*lx->cur=='('){ lx->cur++; tok.type=TOK_LPAREN; return tok; }
-    if(*lx->cur==')'){ lx->cur++; tok.type=TOK_RPAREN; return tok; }
-    if(*lx->cur=='#'){
-        if(lx->cur[1]=='t'){ tok.type=TOK_BOOL; tok.bool_value=1; lx->cur+=2; return tok; }
-        if(lx->cur[1]=='f'){ tok.type=TOK_BOOL; tok.bool_value=0; lx->cur+=2; return tok; }
+    if (needed > a->size) {
+        size_t new_size = a->size * 2;
+        if (new_size < needed)
+            new_size = needed * 2;
+
+        char* new_data = realloc(a->data, new_size);
+        if (!new_data) {
+            fprintf(stderr, "arena realloc failed\n");
+            exit(1);
+        }
+
+        a->data = new_data;
+        a->size = new_size;
     }
-    if(isdigit(*lx->cur)){
-        word64 v=0; while(isdigit(*lx->cur)){ v=v*10+(*lx->cur-'0'); lx->cur++; }
-        tok.type=TOK_INT; tok.value=v; return tok;
-    }
-    const char* start = lx->cur;
-    while(*lx->cur && (isalnum(*lx->cur) || strchr("+-*/=<>&",*lx->cur))) lx->cur++;
-    tok.type=TOK_SYMBOL; tok.start=start; tok.len=lx->cur-start;
-    return tok;
+
+    void* ptr = a->data + aligned;
+    a->offset = aligned + size;
+    return ptr;
 }
 
-// ---------------- VM ----------------
-static void emit(Sel_vm* vm, Sel_op op, word64 value){ vm->code[vm->size].op=op; vm->code[vm->size].value=value; vm->size++; }
+// --------------------------------------------------
+// VM
+// --------------------------------------------------
+typedef enum {
+    OP_PUSH_INT,
+    OP_PLUS, OP_MINUS, OP_MUL, OP_DIV,
+    OP_EQ, OP_LT, OP_GT, OP_LE, OP_GE
+} Sel_op;
 
-static Sel_op symbol_to_op(const char* sym, size_t len){
-    if(len==1){ switch(sym[0]){ case '+': return OP_PLUS; case '-': return OP_MINUS; case '*': return OP_MUL; case '/': return OP_DIV; case '=': return OP_EQ; case '<': return OP_LT; case '>': return OP_GT; } }
-    else if(len==2){ if(strncmp(sym,"<=",2)==0) return OP_LE; if(strncmp(sym,">=",2)==0) return OP_GE; }
-    fprintf(stderr,"Unknown operator: %.*s\n",(int)len,sym); exit(1);
-}
+typedef struct {
+    Sel_op op;
+    word64 value;
+} Sel_inst;
 
-// ---------------- Compiler ----------------
-static void compile_expr(Lexer* lx, Sel_vm* vm, Arena* arena);
+typedef struct {
+    Sel_inst* code;
+    size_t    size;
+    size_t    ip;
 
-static void compile_list(Lexer* lx, Sel_vm* vm, Arena* arena){
-    Token tok = lexer_next(lx);
-    if(tok.type!=TOK_SYMBOL){ fprintf(stderr,"Expected operator\n"); exit(1); }
-    Sel_op op = symbol_to_op(tok.start,tok.len);
-    int first=1;
-    while(1){
-        const char* save=lx->cur;
-        tok=lexer_next(lx);
-        if(tok.type==TOK_RPAREN) break;
-        lx->cur=save;
-        compile_expr(lx,vm,arena);
-        if(!first) emit(vm,op,0);
-        first=0;
-    }
-}
+    word64*   stack;
+    size_t    sp;
+} Sel_vm;
 
-static void compile_expr(Lexer* lx, Sel_vm* vm, Arena* arena){
-    Token tok = lexer_next(lx);
-    if(tok.type==TOK_LPAREN) compile_list(lx,vm,arena);
-    else if(tok.type==TOK_INT) emit(vm,OP_PUSH_INT,tok.value);
-    else if(tok.type==TOK_BOOL) emit(vm,OP_PUSH_BOOL,tok.bool_value);
-    else { fprintf(stderr,"Syntax error\n"); exit(1); }
-}
+word64 run(Sel_vm* vm) {
+    vm->sp = 0;
 
-// ---------------- VM Execution ----------------
-static word64 run_vm(Sel_vm* vm){
-    vm->sp=0;
-    for(vm->ip=0; vm->ip<vm->size; vm->ip++){
-        Sel_inst* i=&vm->code[vm->ip];
-        switch(i->op){
-            case OP_PUSH_INT: vm->stack[vm->sp++]=i->value; break;
-            case OP_PUSH_BOOL: vm->stack[vm->sp++]=i->value; break;
-            case OP_PLUS: { word64 b=vm->stack[--vm->sp]; word64 a=vm->stack[--vm->sp]; vm->stack[vm->sp++]=a+b; break; }
-            case OP_MINUS:{ word64 b=vm->stack[--vm->sp]; word64 a=vm->stack[--vm->sp]; vm->stack[vm->sp++]=a-b; break; }
-            case OP_MUL: { word64 b=vm->stack[--vm->sp]; word64 a=vm->stack[--vm->sp]; vm->stack[vm->sp++]=a*b; break; }
-            case OP_DIV: { word64 b=vm->stack[--vm->sp]; word64 a=vm->stack[--vm->sp]; if(!b){fprintf(stderr,"Div0\n");exit(1);} vm->stack[vm->sp++]=a/b; break; }
-            case OP_EQ: { word64 b=vm->stack[--vm->sp]; word64 a=vm->stack[--vm->sp]; vm->stack[vm->sp++]=(a==b)?1:0; break; }
-            case OP_LT: { word64 b=vm->stack[--vm->sp]; word64 a=vm->stack[--vm->sp]; vm->stack[vm->sp++]=(a<b)?1:0; break; }
-            case OP_GT: { word64 b=vm->stack[--vm->sp]; word64 a=vm->stack[--vm->sp]; vm->stack[vm->sp++]=(a>b)?1:0; break; }
-            case OP_LE: { word64 b=vm->stack[--vm->sp]; word64 a=vm->stack[--vm->sp]; vm->stack[vm->sp++]=(a<=b)?1:0; break; }
-            case OP_GE: { word64 b=vm->stack[--vm->sp]; word64 a=vm->stack[--vm->sp]; vm->stack[vm->sp++]=(a>=b)?1:0; break; }
+    for (vm->ip = 0; vm->ip < vm->size; vm->ip++) {
+        Sel_inst i = vm->code[vm->ip];
+        switch (i.op) {
+            case OP_PUSH_INT:
+                vm->stack[vm->sp++] = i.value;
+                break;
+
+            case OP_PLUS:
+                vm->stack[vm->sp-2] += vm->stack[vm->sp-1];
+                vm->sp--;
+                break;
+
+            case OP_MINUS:
+                vm->stack[vm->sp-2] -= vm->stack[vm->sp-1];
+                vm->sp--;
+                break;
+
+            case OP_MUL:
+                vm->stack[vm->sp-2] *= vm->stack[vm->sp-1];
+                vm->sp--;
+                break;
+
+            case OP_DIV:
+                if (vm->stack[vm->sp-1] == 0) {
+                    fprintf(stderr, "division by zero\n");
+                    exit(1);
+                }
+                vm->stack[vm->sp-2] /= vm->stack[vm->sp-1];
+                vm->sp--;
+                break;
+
+            case OP_EQ:
+                vm->stack[vm->sp-2] =
+                    (vm->stack[vm->sp-2] == vm->stack[vm->sp-1]);
+                vm->sp--;
+                break;
+
+            case OP_LT:
+                vm->stack[vm->sp-2] =
+                    (vm->stack[vm->sp-2] < vm->stack[vm->sp-1]);
+                vm->sp--;
+                break;
+
+            case OP_GT:
+                vm->stack[vm->sp-2] =
+                    (vm->stack[vm->sp-2] > vm->stack[vm->sp-1]);
+                vm->sp--;
+                break;
+
+            case OP_LE:
+                vm->stack[vm->sp-2] =
+                    (vm->stack[vm->sp-2] <= vm->stack[vm->sp-1]);
+                vm->sp--;
+                break;
+
+            case OP_GE:
+                vm->stack[vm->sp-2] =
+                    (vm->stack[vm->sp-2] >= vm->stack[vm->sp-1]);
+                vm->sp--;
+                break;
+
+            default:
+                fprintf(stderr, "bad opcode\n");
+                exit(1);
         }
     }
+
     return vm->stack[0];
 }
 
-// ---------------- Public API ----------------
-int run_expression(const char* expr, word64* out, Arena* arena){
-    if(!expr||!out) return -1;
-    Lexer lx; lexer_init(&lx,expr,strlen(expr));
-    Sel_vm vm={0};
-    vm.code = arena_alloc(arena,sizeof(Sel_inst)*256,_Alignof(Sel_inst));
-    vm.stack=arena_alloc(arena,sizeof(word64)*256,_Alignof(word64));
-    vm.size=0;
-    compile_expr(&lx,&vm,arena);
-    *out = run_vm(&vm);
-    return 0;
+// --------------------------------------------------
+// Compiler / Parser
+// --------------------------------------------------
+static void skip_ws(const char** p) {
+    while (isspace(**p)) (*p)++;
 }
 
-// ---------------- REPL ----------------
-#ifndef TEST_BUILD
-int main(void){
-    Arena* arena = arena_create(4096);
-    printf("Tiny Lisp REPL (supports + - * / = < > <= >= #t #f)\nType 'exit' to quit.\n");
-    char buffer[1024];
-    while(1){
-        printf("> ");
-        if(!fgets(buffer,sizeof(buffer),stdin)) break;
-        if(strncmp(buffer,"exit",4)==0) break;
-        word64 result;
-        Arena* expr_arena = arena_create(1024); // per expression
-        if(run_expression(buffer,&result,expr_arena)==0) PRINT_WORD64(result);
-        arena_destroy(expr_arena);
+static void emit(Sel_vm* vm, Sel_op op) {
+    vm->code[vm->size++] = (Sel_inst){op, 0};
+}
+
+static void compile_expr(const char** p, Sel_vm* vm);
+
+static void compile_list(const char** p, Sel_vm* vm) {
+    skip_ws(p);
+
+    Sel_op op;
+    if      (**p == '+') op = OP_PLUS;
+    else if (**p == '-') op = OP_MINUS;
+    else if (**p == '*') op = OP_MUL;
+    else if (**p == '/') op = OP_DIV;
+    else if (**p == '=') op = OP_EQ;
+    else if (**p == '<' && (*p)[1] == '=') { op = OP_LE; (*p)++; }
+    else if (**p == '>' && (*p)[1] == '=') { op = OP_GE; (*p)++; }
+    else if (**p == '<') op = OP_LT;
+    else if (**p == '>') op = OP_GT;
+    else {
+        fprintf(stderr, "unknown operator\n");
+        exit(1);
     }
+
+    (*p)++; // consume operator
+
+    int argc = 0;
+    while (1) {
+        skip_ws(p);
+        if (**p == ')') break;
+        compile_expr(p, vm);
+        argc++;
+    }
+
+    if (argc < 2) {
+        fprintf(stderr, "operator needs at least 2 operands\n");
+        exit(1);
+    }
+
+    for (int i = 0; i < argc - 1; i++)
+        emit(vm, op);
+
+    (*p)++; // consume ')'
+}
+
+static void compile_expr(const char** p, Sel_vm* vm) {
+    skip_ws(p);
+
+    if (**p == '(') {
+        (*p)++;
+        compile_list(p, vm);
+        return;
+    }
+
+    if (isdigit(**p)) {
+        word64 v = 0;
+        while (isdigit(**p)) {
+            v = v * 10 + (**p - '0');
+            (*p)++;
+        }
+        vm->code[vm->size++] = (Sel_inst){OP_PUSH_INT, v};
+        return;
+    }
+
+    fprintf(stderr, "syntax error\n");
+    exit(1);
+}
+
+// --------------------------------------------------
+// REPL
+// --------------------------------------------------
+static void repl(void) {
+    char line[256];
+    printf("SEL REPL (Ctrl+D to exit)\n");
+
+    Arena* arena = arena_create(1024);
+
+    while (1) {
+        printf("> ");
+        if (!fgets(line, sizeof(line), stdin))
+            break;
+
+        arena_reset(arena);
+
+        Sel_vm vm = {0};
+        vm.code  = arena_alloc(arena, sizeof(Sel_inst) * 256, ALIGNOF(Sel_inst));
+        vm.stack = arena_alloc(arena, sizeof(word64)   * 256, ALIGNOF(word64));
+
+        const char* p = line;
+        compile_expr(&p, &vm);
+        word64 r = run(&vm);
+
+        printf("=> %" PRIi64 "\n", r);
+    }
+
     arena_destroy(arena);
-    return 0;
+}
+
+// --------------------------------------------------
+// Tests
+// --------------------------------------------------
+#ifdef TEST
+static void run_test(Arena* arena, const char* expr, const char* expected) {
+    arena_reset(arena);
+
+    Sel_vm vm = {0};
+    vm.code  = arena_alloc(arena, sizeof(Sel_inst) * 256, ALIGNOF(Sel_inst));
+    vm.stack = arena_alloc(arena, sizeof(word64)   * 256, ALIGNOF(word64));
+
+    const char* p = expr;
+    compile_expr(&p, &vm);
+    word64 r = run(&vm);
+
+    int pass;
+    if (!strcmp(expected, "T")) pass = (r != 0);
+    else if (!strcmp(expected, "F")) pass = (r == 0);
+    else pass = (r == atoll(expected));
+
+    printf("[%s] %-20s => %" PRIi64 "\n",
+           pass ? "PASS" : "FAIL", expr, r);
 }
 #endif
+
+// --------------------------------------------------
+// main
+// --------------------------------------------------
+int main(void) {
+#ifdef TEST
+    Arena* arena = arena_create(1024);
+
+    run_test(arena, "(+ 1 2)", "3");
+    run_test(arena, "(+ 1 2 3 4)", "10");
+    run_test(arena, "(+ 10 (+ 1 2))", "13");
+    run_test(arena, "(+ 1 2 (+ 3 4))", "10");
+    run_test(arena, "(- 10 4)", "6");
+    run_test(arena, "(- 20 3 2)", "15");
+    run_test(arena, "(* 2 3 4)", "24");
+    run_test(arena, "(* 2 (+ 1 2))", "6");
+    run_test(arena, "(/ 20 5)", "4");
+    run_test(arena, "(/ 100 5 2)", "10");
+    run_test(arena, "(= 5 5)", "T");
+    run_test(arena, "(= 5 6)", "F");
+    run_test(arena, "(< 3 5)", "T");
+    run_test(arena, "(> 3 5)", "F");
+    run_test(arena, "(<= 5 5)", "T");
+    run_test(arena, "(>= 6 5)", "T");
+
+    arena_destroy(arena);
+#else
+    repl();
+#endif
+    return 0;
+}
