@@ -195,11 +195,19 @@ static void compile_list(const char** p, Sel_vm* vm) {
 
     (*p)++; // consume operator
 
-    int argc = 0;
+    // ------------------------
+    // Compile operands
+    // ------------------------
+    skip_ws(p);
+    compile_expr(p, vm); // first operand
+    int argc = 1;
+
     while (1) {
         skip_ws(p);
         if (**p == ')') break;
+
         compile_expr(p, vm);
+        emit(vm, op);   // left fold for non-associative
         argc++;
     }
 
@@ -207,9 +215,6 @@ static void compile_list(const char** p, Sel_vm* vm) {
         fprintf(stderr, "operator needs at least 2 operands\n");
         exit(1);
     }
-
-    for (int i = 0; i < argc - 1; i++)
-        emit(vm, op);
 
     (*p)++; // consume ')'
 }
@@ -287,7 +292,7 @@ static void run_test(Arena* arena, const char* expr, const char* expected) {
     else if (!strcmp(expected, "F")) pass = (r == 0);
     else pass = (r == atoll(expected));
 
-    printf("[%s] %-20s => %" PRIi64 "\n",
+    printf("[%s] %-25s => %" PRIi64 "\n",
            pass ? "PASS" : "FAIL", expr, r);
 }
 #endif
@@ -304,11 +309,11 @@ int main(void) {
     run_test(arena, "(+ 10 (+ 1 2))", "13");
     run_test(arena, "(+ 1 2 (+ 3 4))", "10");
     run_test(arena, "(- 10 4)", "6");
-    run_test(arena, "(- 20 3 2)", "15");
+    run_test(arena, "(- 20 3 2)", "15");   // ✅ fixed
     run_test(arena, "(* 2 3 4)", "24");
     run_test(arena, "(* 2 (+ 1 2))", "6");
     run_test(arena, "(/ 20 5)", "4");
-    run_test(arena, "(/ 100 5 2)", "10");
+    run_test(arena, "(/ 100 5 2)", "10");  // ✅ fixed
     run_test(arena, "(= 5 5)", "T");
     run_test(arena, "(= 5 6)", "F");
     run_test(arena, "(< 3 5)", "T");
